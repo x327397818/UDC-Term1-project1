@@ -85,10 +85,20 @@ plt.imshow(image)  # if you wanted to show a single color channel image called '
 
 # Below are some helper functions to help get you started. They should look familiar from the lesson!
 
-# In[3]:
+# In[13]:
 
 
 import math
+
+#add global variables to apply a line filter.
+global right_top_prev
+global right_bottom_prev
+global left_top_prev
+global left_bottom_prev
+right_top_prev = None
+right_bottom_prev = None
+left_top_prev = None
+left_bottom_prev = None
 
 def grayscale(img):
     """Applies the Grayscale transform
@@ -132,8 +142,39 @@ def region_of_interest(img, vertices):
     masked_image = cv2.bitwise_and(img, mask)
     return masked_image
 
+def cal_top_bottom(line_slope,line_center,line_len,top_y,bottom_y,top_prev,bottom_prev):
+    """Calculate top and bottom point of the lane"""
+    line_cnt = 0
+    line_center_mean = (0,0)
+    slope_mean = 0
 
-def draw_lines(img, lines, color=[255, 0, 0], thickness=2):
+    if len(line_slope) > 0:
+        #Calculate average center and slope based on the weight(length of lines)
+        for i in range(len(line_slope)):
+            line_center_mean = (line_center_mean[0] + line_len[i] * line_center[i][0], line_center_mean[1] + line_len[i] * line_center[i][1])
+            slope_mean += line_len[i]*line_slope[i]
+            line_cnt += line_len[i]
+        line_center_mean = (line_center_mean[0]/line_cnt,line_center_mean[1]/line_cnt)
+        slope_mean = slope_mean/line_cnt
+        
+        top_point = (int(low_pass_filter((top_y-line_center_mean[1])/slope_mean + line_center_mean[0],top_prev)), int(top_y))
+        bottom_point = (int(low_pass_filter((bottom_y-line_center_mean[1])/slope_mean + line_center_mean[0],bottom_prev)), int(bottom_y))
+    else:
+        top_point = (int(top_prev),int(top_y))
+        bottom_point = (int(bottom_prev),int(bottom_y))
+        
+    return top_point,bottom_point
+    
+def low_pass_filter(x_current,y_prev,a = 0.1):
+    """ Smooth the lines difference between frames """
+    if y_prev != None:
+        y_current = a * x_current + (1-a) * y_prev
+    else:
+        y_current = x_current
+    
+    return y_current
+
+def draw_lines(img, lines, color=[255, 0, 0], thickness=5):
     """
     NOTE: this is the function you might want to use as a starting point once you want to 
     average/extrapolate the line segments you detect to map out the full
@@ -150,9 +191,57 @@ def draw_lines(img, lines, color=[255, 0, 0], thickness=2):
     If you want to make the lines semi-transparent, think about combining
     this function with the weighted_img() function below
     """
-    for line in lines:
-        for x1,y1,x2,y2 in line:
-            cv2.line(img, (x1, y1), (x2, y2), color, thickness)
+    
+    global right_top_prev
+    global right_bottom_prev
+    global left_top_prev
+    global left_bottom_prev
+    
+    #set top and bottom of lane
+    top_y = 0.6 * img.shape[0]
+    bottom_y = img.shape[0]
+    
+    left_slope = []
+    left_center = []
+    left_len = []
+    
+    right_slope = []
+    right_center = []
+    right_len = []
+    #calculate slopes/centers/length of all line and separate them to left/right
+    if lines is not None:
+        for line in lines:
+            for x1,y1,x2,y2 in line:
+                slope = (y2 - y1)/(x2 - x1)
+                center = ((x1+x2)/2,(y1+y2)/2)
+                line_length = math.sqrt(math.pow((y2-y1),2) + math.pow((x2-x1),2))
+                if slope < 0:
+                    # Ignore obvious invalid lines
+                    if slope > -.5 or slope < -.8:
+                        continue 
+                    left_slope.append(slope)
+                    left_center.append(center)
+                    left_len.append(line_length)
+                
+                elif slope > 0:
+                    if slope < .5 or slope > .8:
+                        continue 
+                    right_slope.append(slope)
+                    right_center.append(center)
+                    right_len.append(line_length)
+                
+    left_top,left_bottom = cal_top_bottom(left_slope,left_center,left_len,top_y,bottom_y,left_top_prev,left_bottom_prev)
+    #update prev value
+    left_top_prev = left_top[0]
+    left_bottom_prev = left_bottom[0]
+    
+    right_top,right_bottom = cal_top_bottom(right_slope,right_center,right_len,top_y,bottom_y,right_top_prev,right_bottom_prev)
+    #update prev value
+    right_top_prev = right_top[0]
+    right_bottom_prev = right_bottom[0]
+            
+    cv2.line(img, left_top, left_bottom, color, thickness)
+    cv2.line(img, right_top, right_bottom, color, thickness)
 
 def hough_lines(img, rho, theta, threshold, min_line_len, max_line_gap):
     """
@@ -162,6 +251,7 @@ def hough_lines(img, rho, theta, threshold, min_line_len, max_line_gap):
     """
     lines = cv2.HoughLinesP(img, rho, theta, threshold, np.array([]), minLineLength=min_line_len, maxLineGap=max_line_gap)
     line_img = np.zeros((img.shape[0], img.shape[1], 3), dtype=np.uint8)
+    
     draw_lines(line_img, lines)
     return line_img
 
@@ -180,6 +270,54 @@ def weighted_img(img, initial_img, α=0.8, β=1., λ=0.):
     NOTE: initial_img and img must be the same shape!
     """
     return cv2.addWeighted(initial_img, α, img, β, λ)
+
+def color_filter(img):
+    "Add a color fiter for white and yellow"
+    color_low = np.array([180,180,0])
+    color_high = np.array([255,255,255])
+    color_mask = cv2.inRange(img, color_low, color_high)
+    filtered_img = cv2.bitwise_and(img, img, mask = color_mask)
+    return filtered_img
+    
+
+def image_processing(img):
+    output_route = 'writeup_img/'
+    #filter colors
+    filtered_img = color_filter(img)
+    mpimg.imsave(output_route + 'color_filtered.jpg', filtered_img)
+    #img to gray scale
+    gray = grayscale(filtered_img)
+    mpimg.imsave(output_route + 'gray_img.jpg', gray)
+    # blur gray img with kernel_size
+    kernel_size = 5
+    blur_gray = gaussian_blur(gray, kernel_size)
+    mpimg.imsave(output_route + 'blur_gray.jpg', blur_gray)
+    #detect edges in the img with thresholds
+    low_threshold = 50
+    high_threshold = 150
+    edges =canny(blur_gray,low_threshold,high_threshold)
+    mpimg.imsave(output_route + 'edges.jpg', edges)
+    #define polygon
+    imshape = image.shape 
+    vertices = np.array([[(0.05 * imshape[1],imshape[0]),(0.53 * imshape[1], 0.57 * imshape[0]), (0.55 * imshape[1], 0.57 * imshape[0]), (0.95 * imshape[1],imshape[0])]], dtype=np.int32)
+    masked_edges = region_of_interest(edges, vertices)
+    mpimg.imsave(output_route + 'masked_edges.jpg', masked_edges)
+    
+    # Define the Hough transform parameters
+    rho = 2 # distance resolution in pixels of the Hough grid
+    theta = np.pi/180 # angular resolution in radians of the Hough grid
+    threshold = 30     # minimum number of votes (intersections in Hough grid cell)
+    min_line_length = 25 #minimum number of pixels making up a line
+    max_line_gap = 25  # maximum gap in pixels between connectable line segments
+    #find lines
+    lines_image = hough_lines(masked_edges, rho, theta, threshold, min_line_length, max_line_gap)
+    mpimg.imsave(output_route + 'lines_image.jpg', lines_image)
+
+    #add lines img with original img
+    weighted_image = weighted_img(lines_image, img)
+    mpimg.imsave(output_route + 'weighted_image.jpg', weighted_image)
+    
+    return weighted_image
 
 
 # ## Test Images
@@ -202,184 +340,178 @@ os.listdir("test_images/")
 # 
 # Try tuning the various parameters, especially the low and high Canny thresholds as well as the Hough lines parameters.
 
-# In[6]:
+# In[14]:
 
 
 # TODO: Build your pipeline that will draw lane lines on the test_images
 # then save them to the test_images_output directory.
-def image_processing(img):
-    #img to gray scale
-    gray = grayscale(img)
-    # blur gray img with kernel_size
-    kernel_size = 5
-    blur_gray = gaussian_blur(gray, kernel_size)
-    #detect edges in the img with thresholds
-    low_threshold = 50
-    high_threshold = 150
-    edges =canny(blur_gray,low_threshold,high_threshold)
-    #define polygon
-    imshape = image.shape
-    vertices = np.array([[(0,imshape[0]),(450, 290), (490, 290), (imshape[1],imshape[0])]], dtype=np.int32)
-    masked_edges = region_of_interest(edges, vertices)
+#input and output route
+input_route = 'test_images/'
+output_route = 'test_images_output/'
+#read img from test folder
+input_imgs = os.listdir(input_route)
     
-    # Define the Hough transform parameters
-    rho = 2 # distance resolution in pixels of the Hough grid
-    theta = np.pi/180 # angular resolution in radians of the Hough grid
-    threshold = 10     # minimum number of votes (intersections in Hough grid cell)
-    min_line_length = 40 #minimum number of pixels making up a line
-    max_line_gap = 20  # maximum gap in pixels between connectable line segments
-    #find lines
-    lines_image = hough_lines(masked_edges, rho, theta, threshold, min_line_length, max_line_gap)
-    #add lines img with original img
-    weighted_image = weighted_img(lines_image, img)
-    
-    return weighted_image
-    
-    
-    input_route = 'test_imgages/'
-    output_route = 'test_images_output/'
-    #read img from test folder
-    input_imgs = os.listdir(input_route)
-    
-    for img_files in input_imgs:
-        img = mpimg.imread(input_route + img_files)
+for img_files in input_imgs:
+    img = mpimg.imread(input_route + img_files)
         
-        result = image_processing(img)
-        
-        plt.imshow(result)
-        
-        mpimg.imsave(output_route + 'result_' + img_files, result)
+    lined_img = image_processing(img)
+    
+    #reset global variables when one image processing is done
+    right_top_prev = None
+    right_bottom_prev = None
+    left_top_prev = None
+    left_bottom_prev = None
+    
+    plt.imshow(lined_img)
+    plt.show()
+    
+    mpimg.imsave(output_route + 'result_' + img_files, lined_img)
     
 
 
-# ## Test on Videos
-# 
-# You know what's cooler than drawing lanes over images? Drawing lanes over video!
-# 
-# We can test our solution on two provided videos:
-# 
-# `solidWhiteRight.mp4`
-# 
-# `solidYellowLeft.mp4`
-# 
-# **Note: if you get an import error when you run the next cell, try changing your kernel (select the Kernel menu above --> Change Kernel). Still have problems? Try relaunching Jupyter Notebook from the terminal prompt. Also, consult the forums for more troubleshooting tips.**
-# 
-# **If you get an error that looks like this:**
-# ```
-# NeedDownloadError: Need ffmpeg exe. 
-# You can download it by calling: 
-# imageio.plugins.ffmpeg.download()
-# ```
-# **Follow the instructions in the error message and check out [this forum post](https://discussions.udacity.com/t/project-error-of-test-on-videos/274082) for more troubleshooting tips across operating systems.**
-
-# In[ ]:
-
-
-# Import everything needed to edit/save/watch video clips
-from moviepy.editor import VideoFileClip
-from IPython.display import HTML
-
-
-# In[ ]:
-
-
-def process_image(image):
-    # NOTE: The output you return should be a color image (3 channel) for processing video below
-    # TODO: put your pipeline here,
-    # you should return the final output (image where lines are drawn on lanes)
-
-    return result
-
-
-# Let's try the one with the solid white lane on the right first ...
-
-# In[ ]:
-
-
-white_output = 'test_videos_output/solidWhiteRight.mp4'
-## To speed up the testing process you may want to try your pipeline on a shorter subclip of the video
-## To do so add .subclip(start_second,end_second) to the end of the line below
-## Where start_second and end_second are integer values representing the start and end of the subclip
-## You may also uncomment the following line for a subclip of the first 5 seconds
-##clip1 = VideoFileClip("test_videos/solidWhiteRight.mp4").subclip(0,5)
-clip1 = VideoFileClip("test_videos/solidWhiteRight.mp4")
-white_clip = clip1.fl_image(process_image) #NOTE: this function expects color images!!
-get_ipython().run_line_magic('time', 'white_clip.write_videofile(white_output, audio=False)')
-
-
-# Play the video inline, or if you prefer find the video in your filesystem (should be in the same directory) and play it in your video player of choice.
-
-# In[ ]:
-
-
-HTML("""
-<video width="960" height="540" controls>
-  <source src="{0}">
-</video>
-""".format(white_output))
-
-
-# ## Improve the draw_lines() function
-# 
-# **At this point, if you were successful with making the pipeline and tuning parameters, you probably have the Hough line segments drawn onto the road, but what about identifying the full extent of the lane and marking it clearly as in the example video (P1_example.mp4)?  Think about defining a line to run the full length of the visible lane based on the line segments you identified with the Hough Transform. As mentioned previously, try to average and/or extrapolate the line segments you've detected to map out the full extent of the lane lines. You can see an example of the result you're going for in the video "P1_example.mp4".**
-# 
-# **Go back and modify your draw_lines function accordingly and try re-running your pipeline. The new output should draw a single, solid line over the left lane line and a single, solid line over the right lane line. The lines should start from the bottom of the image and extend out to the top of the region of interest.**
-
-# Now for the one with the solid yellow lane on the left. This one's more tricky!
-
-# In[ ]:
-
-
-yellow_output = 'test_videos_output/solidYellowLeft.mp4'
-## To speed up the testing process you may want to try your pipeline on a shorter subclip of the video
-## To do so add .subclip(start_second,end_second) to the end of the line below
-## Where start_second and end_second are integer values representing the start and end of the subclip
-## You may also uncomment the following line for a subclip of the first 5 seconds
-##clip2 = VideoFileClip('test_videos/solidYellowLeft.mp4').subclip(0,5)
-clip2 = VideoFileClip('test_videos/solidYellowLeft.mp4')
-yellow_clip = clip2.fl_image(process_image)
-get_ipython().run_line_magic('time', 'yellow_clip.write_videofile(yellow_output, audio=False)')
-
-
-# In[ ]:
-
-
-HTML("""
-<video width="960" height="540" controls>
-  <source src="{0}">
-</video>
-""".format(yellow_output))
-
-
-# ## Writeup and Submission
-# 
-# If you're satisfied with your video outputs, it's time to make the report writeup in a pdf or markdown file. Once you have this Ipython notebook ready along with the writeup, it's time to submit for review! Here is a [link](https://github.com/udacity/CarND-LaneLines-P1/blob/master/writeup_template.md) to the writeup template file.
-# 
-
-# ## Optional Challenge
-# 
-# Try your lane finding pipeline on the video below.  Does it still work?  Can you figure out a way to make it more robust?  If you're up for the challenge, modify your pipeline so it works with this video and submit it along with the rest of your project!
-
-# In[ ]:
-
-
-challenge_output = 'test_videos_output/challenge.mp4'
-## To speed up the testing process you may want to try your pipeline on a shorter subclip of the video
-## To do so add .subclip(start_second,end_second) to the end of the line below
-## Where start_second and end_second are integer values representing the start and end of the subclip
-## You may also uncomment the following line for a subclip of the first 5 seconds
-##clip3 = VideoFileClip('test_videos/challenge.mp4').subclip(0,5)
-clip3 = VideoFileClip('test_videos/challenge.mp4')
-challenge_clip = clip3.fl_image(process_image)
-get_ipython().run_line_magic('time', 'challenge_clip.write_videofile(challenge_output, audio=False)')
-
-
-# In[ ]:
-
-
-HTML("""
-<video width="960" height="540" controls>
-  <source src="{0}">
-</video>
-""".format(challenge_output))
-
+## ## Test on Videos
+## 
+## You know what's cooler than drawing lanes over images? Drawing lanes over video!
+## 
+## We can test our solution on two provided videos:
+## 
+## `solidWhiteRight.mp4`
+## 
+## `solidYellowLeft.mp4`
+## 
+## **Note: if you get an import error when you run the next cell, try changing your kernel (select the Kernel menu above --> Change Kernel). Still have problems? Try relaunching Jupyter Notebook from the terminal prompt. Also, consult the forums for more troubleshooting tips.**
+## 
+## **If you get an error that looks like this:**
+## ```
+## NeedDownloadError: Need ffmpeg exe. 
+## You can download it by calling: 
+## imageio.plugins.ffmpeg.download()
+## ```
+## **Follow the instructions in the error message and check out [this forum post](https://discussions.udacity.com/t/project-error-of-test-on-videos/274082) for more troubleshooting tips across operating systems.**
+#
+## In[15]:
+#
+#
+## Import everything needed to edit/save/watch video clips
+#from moviepy.editor import VideoFileClip
+#from IPython.display import HTML
+#
+#
+## In[16]:
+#
+#
+#def process_image(image):
+#    # NOTE: The output you return should be a color image (3 channel) for processing video below
+#    # TODO: put your pipeline here,
+#    # you should return the final output (image where lines are drawn on lanes)
+#    result = image_processing(image)
+#    return result
+#
+#
+## Let's try the one with the solid white lane on the right first ...
+#
+## In[17]:
+#
+#
+##reset global variabals
+#right_top_prev = None
+#right_bottom_prev = None
+#left_top_prev = None
+#left_bottom_prev = None
+#white_output = 'test_videos_output/solidWhiteRight.mp4'
+### To speed up the testing process you may want to try your pipeline on a shorter subclip of the video
+### To do so add .subclip(start_second,end_second) to the end of the line below
+### Where start_second and end_second are integer values representing the start and end of the subclip
+### You may also uncomment the following line for a subclip of the first 5 seconds
+###clip1 = VideoFileClip("test_videos/solidWhiteRight.mp4").subclip(0,5)
+#clip1 = VideoFileClip("test_videos/solidWhiteRight.mp4")
+#white_clip = clip1.fl_image(process_image) #NOTE: this function expects color images!!
+#get_ipython().run_line_magic('time', 'white_clip.write_videofile(white_output, audio=False)')
+#
+#
+## Play the video inline, or if you prefer find the video in your filesystem (should be in the same directory) and play it in your video player of choice.
+#
+## In[18]:
+#
+#
+#HTML("""
+#<video width="960" height="540" controls>
+#  <source src="{0}">
+#</video>
+#""".format(white_output))
+#
+#
+## ## Improve the draw_lines() function
+## 
+## **At this point, if you were successful with making the pipeline and tuning parameters, you probably have the Hough line segments drawn onto the road, but what about identifying the full extent of the lane and marking it clearly as in the example video (P1_example.mp4)?  Think about defining a line to run the full length of the visible lane based on the line segments you identified with the Hough Transform. As mentioned previously, try to average and/or extrapolate the line segments you've detected to map out the full extent of the lane lines. You can see an example of the result you're going for in the video "P1_example.mp4".**
+## 
+## **Go back and modify your draw_lines function accordingly and try re-running your pipeline. The new output should draw a single, solid line over the left lane line and a single, solid line over the right lane line. The lines should start from the bottom of the image and extend out to the top of the region of interest.**
+#
+## Now for the one with the solid yellow lane on the left. This one's more tricky!
+#
+## In[19]:
+#
+#
+##reset global variabals
+#right_top_prev = None
+#right_bottom_prev = None
+#left_top_prev = None
+#left_bottom_prev = None
+#yellow_output = 'test_videos_output/solidYellowLeft.mp4'
+### To speed up the testing process you may want to try your pipeline on a shorter subclip of the video
+### To do so add .subclip(start_second,end_second) to the end of the line below
+### Where start_second and end_second are integer values representing the start and end of the subclip
+### You may also uncomment the following line for a subclip of the first 5 seconds
+###clip2 = VideoFileClip('test_videos/solidYellowLeft.mp4').subclip(0,5)
+#clip2 = VideoFileClip('test_videos/solidYellowLeft.mp4')
+#yellow_clip = clip2.fl_image(process_image)
+#get_ipython().run_line_magic('time', 'yellow_clip.write_videofile(yellow_output, audio=False)')
+#
+#
+## In[20]:
+#
+#
+#HTML("""
+#<video width="960" height="540" controls>
+#  <source src="{0}">
+#</video>
+#""".format(yellow_output))
+#
+#
+## ## Writeup and Submission
+## 
+## If you're satisfied with your video outputs, it's time to make the report writeup in a pdf or markdown file. Once you have this Ipython notebook ready along with the writeup, it's time to submit for review! Here is a [link](https://github.com/udacity/CarND-LaneLines-P1/blob/master/writeup_template.md) to the writeup template file.
+## 
+#
+## ## Optional Challenge
+## 
+## Try your lane finding pipeline on the video below.  Does it still work?  Can you figure out a way to make it more robust?  If you're up for the challenge, modify your pipeline so it works with this video and submit it along with the rest of your project!
+#
+## In[21]:
+#
+#
+##reset global variabals
+#right_top_prev = None
+#right_bottom_prev = None
+#left_top_prev = None
+#left_bottom_prev = None
+#challenge_output = 'test_videos_output/challenge.mp4'
+### To speed up the testing process you may want to try your pipeline on a shorter subclip of the video
+### To do so add .subclip(start_second,end_second) to the end of the line below
+### Where start_second and end_second are integer values representing the start and end of the subclip
+### You may also uncomment the following line for a subclip of the first 5 seconds
+###clip3 = VideoFileClip('test_videos/challenge.mp4').subclip(0,5)
+#clip3 = VideoFileClip('test_videos/challenge.mp4')
+#challenge_clip = clip3.fl_image(process_image)
+#get_ipython().run_line_magic('time', 'challenge_clip.write_videofile(challenge_output, audio=False)')
+#
+#
+## In[22]:
+#
+#
+#HTML("""
+#<video width="960" height="540" controls>
+#  <source src="{0}">
+#</video>
+#""".format(challenge_output))
+#
