@@ -53,7 +53,7 @@ A browser window will appear showing the contents of the current directory.  Cli
 
 ### 1. Pipeline
 
-My pipeline consisted of 5 steps. 
+My pipeline consisted of 8 steps. 
 
 #### 1) Color filter
      
